@@ -1,0 +1,19 @@
+# Usa la misma base que la de tus servicios JobManager/TaskManager
+FROM pyflink/pyflink:1.16.0-scala_2.12
+
+# Establece el directorio de trabajo
+WORKDIR /opt/flink/opt/flink-job
+
+# Copia tu job PyFlink (asumiendo que se llama qa.py)
+# Asegúrate de que el archivo qa.py exista en tu carpeta local ./flink/
+COPY qa.py .
+
+# Instala librerías necesarias para PyFlink y Python (si las usas en qa.py)
+RUN pip install --no-cache-dir \
+    apache-flink==1.16.0 \
+    confluent-kafka \
+    # Agrega aquí cualquier otra dependencia de Python (ej: pydantic, requests, etc.)
+
+# DESCARGA DEL CONECTOR KAFKA
+# Flink 1.16 usa el conector 1.16.0. Esto lo hace accesible a tu job.
+RUN wget https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka/1.16.0/flink-sql-connector-kafka-1.16.0.jar -P /opt/flink/lib/

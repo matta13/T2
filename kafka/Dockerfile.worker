@@ -1,0 +1,28 @@
+# Usa una imagen base ligera de Python
+FROM python:3.11-slim
+
+# Crea el directorio de trabajo
+WORKDIR /app
+
+# Instala librerías del sistema necesarias para compilar dependencias como psycopg2 y confluent-kafka
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    librdkafka-dev \
+    # Limpia el cache
+    && rm -rf /var/lib/apt/lists/*
+
+# Copia los archivos de requerimientos e instálalos
+# Copiamos desde la raíz del contexto (./requirements.txt)
+COPY requirements.txt /app/requirements.txt 
+
+# Instala todas las dependencias listadas en requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copia el script del worker
+# Copiamos desde la carpeta 'kafka' dentro del contexto
+COPY kafka/llm_worker.py /app/llm_worker.py 
+
+# El comando de arranque final se define en docker-compose.yml
+# CMD ["python", "llm_worker.py"]
