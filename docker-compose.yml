@@ -16,8 +16,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
-      - ./postgres/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql   
+      - ./postgres/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql # ⬅️ Ajuste de orden
+      - ./postgres/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql   # ⬅️ Ajuste de orden
     networks:
       - claudio
 
@@ -40,29 +40,53 @@ services:
 
   # ==========================================================
   # 2. INFRAESTRUCTURA DE MENSAJERÍA (KAFKA - MODO KRAFT)
+  # ⬅️ ELIMINASTE Zookeper
   # ==========================================================
   kafka:
-    image: 'bitnami/kafka:3.9.0'
+    image: 'bitnami/kafka:3.9.0' # ⬅️ Nueva imagen Bitnami
     hostname: kafka
     container_name: kafka
     ports:
       - "9092:9092"
     environment:
+      # Configuración de Kraft (Controlador/Broker en un solo nodo)
       - KAFKA_CFG_PROCESS_ROLES=controller,broker
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
       - KAFKA_CFG_NODE_ID=0
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092 
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092 # Dirección interna
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - ALLOW_PLAINTEXT_LISTENER=yes
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
-      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
     volumes:
-      - kafka-data:/bitnami/kafka 
+      - kafka-data:/bitnami/kafka
     networks:
       - claudio
+
+  # ⬅️ NUEVO SERVICIO: Inicializador de Tópicos
+  kafka-topics-initializer:
+    image: 'bitnami/kafka:3.9.0'
+    container_name: kafka-topics-initializer
+    depends_on:
+      kafka:
+        condition: service_started
+    networks:
+      - claudio
+    command: >
+      bash -c "
+      echo 'Esperando a que Kafka esté listo...' &&
+      sleep 15 && # Espera extra para asegurar la inicialización de Kraft
+      /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list | grep -q 'not be found' || echo 'Conexión a Kafka fallida' &&
+      echo 'Kafka listo. Creando tópicos...' &&
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic llm_requests --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic llm_responses --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic validation_results --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+      echo 'Tópicos creados exitosamente.'
+      "
+    restart: "no"
 
   # ==========================================================
   # 3. API PYTHON (FastAPI - qa_api/main.py)
@@ -78,8 +102,8 @@ services:
       - "8000:8000"
     restart: unless-stopped
     depends_on:
-      kafka: 
-        condition: service_started
+      kafka-topics-initializer: # ⬅️ Espera a que los tópicos existan
+        condition: service_completed_successfully
       postgres:
         condition: service_started
       redis_cache:
@@ -96,14 +120,14 @@ services:
     container_name: llm_worker
     restart: unless-stopped
     depends_on:
-      kafka: 
-        condition: service_started
+      kafka-topics-initializer: # ⬅️ Espera a que los tópicos existan
+        condition: service_completed_successfully
       postgres:
         condition: service_started
       redis_cache:
         condition: service_started
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092 
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092 # ⬅️ Nueva dirección de Kafka
       KAFKA_INPUT_TOPIC: llm_requests
       KAFKA_DLQ_TOPIC: llm_dlq
       KAFKA_RESPONSES_TOPIC: llm_responses
@@ -133,6 +157,9 @@ services:
       - JOB_MANAGER_RPC_ADDRESS=jobmanager
     networks:
       - claudio
+    depends_on:
+      kafka-topics-initializer: # ⬅️ Depende de que Kafka esté listo antes de arrancar Flink
+        condition: service_completed_successfully
 
   taskmanager:
     image: pyflink/pyflink:1.16.0-scala_2.12
@@ -152,7 +179,7 @@ services:
       - claudio
   
   # ==========================================================
-  # 6. JOB FLINK
+  # 6. JOB FLINK (MIGRADO A JAVA)
   # ==========================================================
   flink_quality_job:
     build:
@@ -165,8 +192,10 @@ services:
         condition: service_started
       jobmanager:
         condition: service_started
+      kafka-topics-initializer: # ⬅️ Espera a que los tópicos existan antes de ejecutar
+        condition: service_completed_successfully
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092 
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092 # ⬅️ Nueva dirección de Kafka
       KAFKA_INPUT_TOPIC: llm_responses
       KAFKA_OUTPUT_TOPIC: validation_results
       JAVA_TOOL_OPTIONS: -Djdk.lang.ClassLoader.allowArraySyntax=true --add-opens=java.base/java.lang=ALL-UNNAMED
@@ -177,7 +206,7 @@ services:
       - -c
       - |
         echo "=== Verificando archivos antes de ejecutar ==="
-        ls -la /opt/flink/lib/*kafka*
+        ls -la /opt/flink/lib/*kafka* # Debe mostrar el JAR descargado
         echo "=== Ejecutando job Flink ==="
         /opt/flink/bin/flink run -py /opt/flink/opt/flink-job/qa.py
 
